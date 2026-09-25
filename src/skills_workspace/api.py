@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .errors import DomainError, ValidationError
+from .booking import BookingService
 from .service import DomainService
 from .storage import Database
 
@@ -20,6 +21,7 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
     headers = headers or {}
     body = body or {}
     parsed = urlparse(path)
+    query = parse_qs(parsed.query)
     actor_id = headers.get("X-Actor-Id", "")
     try:
         if method == "GET" and parsed.path == "/health":
@@ -38,21 +40,90 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             receipt = service.record_domain_data(actor_id=actor_id, **body)
             return 200 if receipt.replayed else 201, receipt.__dict__
         if method == "GET" and parsed.path == "/domain-records":
-            query = parse_qs(parsed.query)
             site_id = query.get("site_id", [""])[0]
             if not site_id:
                 raise ValidationError("site_id 不能为空")
             category = query.get("category", [None])[0]
             return 200, {"items": [item.__dict__ for item in service.list_domain_data(site_id, category)]}
         if method == "GET" and parsed.path == "/audit-events":
-            query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+        status, payload = _route_booking(service, method, parsed.path, query, body, actor_id)
+        if status is not None:
+            return status, payload
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
     except (TypeError, ValueError) as exc:
         return 400, {"error": "invalid_request", "message": str(exc)}
+
+
+def _route_booking(service: DomainService, method: str, path: str,
+                   query: dict[str, list[str]], body: dict[str, Any],
+                   actor_id: str) -> tuple[int | None, dict[str, Any]]:
+    """分派实训设备预约与维护封锁相关路由。"""
+
+    if not isinstance(service, BookingService):
+        return None, {}
+    post_receipt_actions = {
+        "/booking/equipment": "register_equipment",
+        "/booking/accessories": "register_accessory",
+        "/booking/compatibility": "register_compatibility",
+        "/booking/certificates": "register_certificate",
+        "/booking/open-windows": "register_open_window",
+        "/booking/transition-rules": "register_transition_rule",
+        "/booking/reservations": "confirm_reservation",
+        "/booking/blockades": "publish_blockade",
+        "/booking/blockades/lift": "lift_blockade",
+        "/booking/reschedule/rebook": "rebook_queue_entry",
+        "/booking/reschedule/cancel": "cancel_queue_entry",
+        "/booking/usage-risks/resolve": "resolve_usage_risk",
+    }
+    if method == "POST" and path in post_receipt_actions:
+        receipt = getattr(service, post_receipt_actions[path])(actor_id=actor_id, **body)
+        return 200 if receipt.replayed else 201, receipt.__dict__
+    if method == "POST" and path == "/booking/inquiries":
+        return 200, service.submit_inquiry(actor_id=actor_id, **body)
+    if method == "GET" and path == "/booking/inquiry":
+        inquiry_id = query.get("inquiry_id", [""])[0]
+        if not inquiry_id:
+            raise ValidationError("inquiry_id 不能为空")
+        return 200, service.get_inquiry(inquiry_id)
+    if method == "GET" and path == "/booking/equipment":
+        site_id = query.get("site_id", [""])[0]
+        if not site_id:
+            raise ValidationError("site_id 不能为空")
+        return 200, {"items": service.list_equipment(site_id)}
+    if method == "GET" and path == "/booking/reservations":
+        site_id = query.get("site_id", [""])[0]
+        if not site_id:
+            raise ValidationError("site_id 不能为空")
+        status = query.get("status", [None])[0]
+        equipment_id = query.get("equipment_id", [None])[0]
+        return 200, {"items": service.list_reservations(site_id, status, equipment_id)}
+    if method == "GET" and path == "/booking/reschedule-queue":
+        site_id = query.get("site_id", [""])[0]
+        if not site_id:
+            raise ValidationError("site_id 不能为空")
+        status = query.get("status", ["waiting"])[0]
+        return 200, {"items": service.list_reschedule_queue(site_id, status)}
+    if method == "GET" and path == "/booking/usage-risks":
+        return 200, {"items": service.list_usage_risks(
+            query.get("site_id", [None])[0], query.get("status", [None])[0])}
+    if method == "GET" and path == "/booking/manual-overrides":
+        site_id = query.get("site_id", [""])[0]
+        if not site_id:
+            raise ValidationError("site_id 不能为空")
+        return 200, {"items": service.list_manual_overrides(site_id)}
+    if method == "GET" and path == "/booking/occupancy":
+        resource_type = query.get("resource_type", [""])[0]
+        resource_id = query.get("resource_id", [""])[0]
+        if not resource_type or not resource_id:
+            raise ValidationError("resource_type 和 resource_id 不能为空")
+        return 200, service.resource_occupancy(
+            resource_type, resource_id,
+            query.get("starts_at", [None])[0], query.get("ends_at", [None])[0])
+    return None, {}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -99,7 +170,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     database = Database(args.database)
-    Handler.service = DomainService(database)
+    Handler.service = BookingService(database)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()
