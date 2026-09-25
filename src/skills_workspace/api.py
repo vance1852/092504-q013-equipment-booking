@@ -8,9 +8,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .equipment import EquipmentService
 from .errors import DomainError, ValidationError
 from .service import DomainService
 from .storage import Database
+
+
+def _receipt_reply(receipt) -> tuple[int, dict[str, Any]]:
+    return (200 if receipt.replayed else 201), receipt.__dict__
 
 
 def route(service: DomainService, method: str, path: str, body: dict[str, Any] | None,
@@ -48,6 +53,72 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+        if method == "POST" and parsed.path == "/equipment":
+            return _receipt_reply(service.register_equipment(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/equipment-capability-changes":
+            return _receipt_reply(service.change_equipment_capability(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/attachments":
+            return _receipt_reply(service.register_attachment(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/attachment-capability-changes":
+            return _receipt_reply(service.change_attachment_capability(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/calibration-certificates":
+            return _receipt_reply(service.register_calibration(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/open-windows":
+            return _receipt_reply(service.register_open_window(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/changeover-rules":
+            return _receipt_reply(service.register_changeover_rule(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/slot-searches":
+            return 200, service.search_slots(**body)
+        if method == "POST" and parsed.path == "/reservations":
+            return _receipt_reply(service.confirm_reservation(actor_id=actor_id, **body))
+        if method == "GET" and parsed.path.startswith("/reservations/"):
+            reservation_id = parsed.path[len("/reservations/"):]
+            if not reservation_id:
+                raise ValidationError("reservation_id 不能为空")
+            return 200, service.get_reservation(reservation_id)
+        if method == "POST" and parsed.path == "/reservation-cancellations":
+            return _receipt_reply(service.cancel_reservation(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/maintenance-blocks":
+            return _receipt_reply(service.publish_maintenance_block(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/emergency-deactivations":
+            return _receipt_reply(service.emergency_deactivate(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/reactivations":
+            return _receipt_reply(service.reactivate_resource(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/usage-risk-decisions":
+            return _receipt_reply(service.decide_usage_risk(actor_id=actor_id, **body))
+        if method == "POST" and parsed.path == "/reschedule-entry-closures":
+            return _receipt_reply(service.close_reschedule_entry(actor_id=actor_id, **body))
+        if method == "GET" and parsed.path == "/equipment":
+            query = parse_qs(parsed.query)
+            site_id = query.get("site_id", [""])[0]
+            if not site_id:
+                raise ValidationError("site_id 不能为空")
+            return 200, service.list_equipment(site_id)
+        if method == "GET" and parsed.path == "/occupancy":
+            query = parse_qs(parsed.query)
+            site_id = query.get("site_id", [""])[0]
+            if not site_id:
+                raise ValidationError("site_id 不能为空")
+            return 200, service.resource_occupancy(site_id, query.get("start_at", [""])[0],
+                                                   query.get("end_at", [""])[0])
+        if method == "GET" and parsed.path == "/reschedule-queue":
+            query = parse_qs(parsed.query)
+            site_id = query.get("site_id", [""])[0]
+            if not site_id:
+                raise ValidationError("site_id 不能为空")
+            return 200, {"items": service.list_reschedule_queue(site_id)}
+        if method == "GET" and parsed.path == "/usage-risks":
+            query = parse_qs(parsed.query)
+            site_id = query.get("site_id", [""])[0]
+            if not site_id:
+                raise ValidationError("site_id 不能为空")
+            return 200, {"items": service.list_usage_risks(site_id, query.get("status", [None])[0])}
+        if method == "GET" and parsed.path == "/manual-overrides":
+            query = parse_qs(parsed.query)
+            site_id = query.get("site_id", [""])[0]
+            if not site_id:
+                raise ValidationError("site_id 不能为空")
+            return 200, {"items": service.list_manual_overrides(site_id)}
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
@@ -99,7 +170,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     database = Database(args.database)
-    Handler.service = DomainService(database)
+    Handler.service = EquipmentService(database)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()

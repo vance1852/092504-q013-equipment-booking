@@ -63,6 +63,118 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_hash TEXT NOT NULL UNIQUE,
     occurred_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS equipment (
+    equipment_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    name TEXT NOT NULL,
+    capability_version TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active', 'deactivated')),
+    version INTEGER NOT NULL CHECK(version >= 1),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS attachments (
+    attachment_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    name TEXT NOT NULL,
+    capability_version TEXT NOT NULL,
+    compatible_equipment_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active', 'deactivated')),
+    version INTEGER NOT NULL CHECK(version >= 1),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS calibration_certificates (
+    certificate_id TEXT PRIMARY KEY,
+    resource_type TEXT NOT NULL CHECK(resource_type IN ('equipment', 'attachment')),
+    resource_id TEXT NOT NULL,
+    issuer TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS open_windows (
+    window_id TEXT PRIMARY KEY,
+    resource_type TEXT NOT NULL CHECK(resource_type IN ('equipment', 'attachment')),
+    resource_id TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS changeover_rules (
+    rule_id TEXT PRIMARY KEY,
+    equipment_id TEXT NOT NULL REFERENCES equipment(equipment_id),
+    from_goal TEXT NOT NULL,
+    to_goal TEXT NOT NULL,
+    minutes INTEGER NOT NULL CHECK(minutes >= 0),
+    created_at TEXT NOT NULL,
+    UNIQUE(equipment_id, from_goal, to_goal)
+);
+CREATE TABLE IF NOT EXISTS reservations (
+    reservation_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    goal TEXT NOT NULL,
+    applicant_id TEXT NOT NULL REFERENCES actors(actor_id),
+    equipment_id TEXT NOT NULL REFERENCES equipment(equipment_id),
+    equipment_version INTEGER NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('confirmed', 'reschedule_pending', 'rescheduled', 'cancelled', 'terminated')),
+    calibration_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reservation_attachments (
+    reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+    attachment_id TEXT NOT NULL REFERENCES attachments(attachment_id),
+    attachment_version INTEGER NOT NULL,
+    PRIMARY KEY (reservation_id, attachment_id)
+);
+CREATE TABLE IF NOT EXISTS maintenance_blocks (
+    block_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    resource_type TEXT NOT NULL CHECK(resource_type IN ('equipment', 'attachment')),
+    resource_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('planned', 'emergency')),
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reschedule_queue (
+    entry_id TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    block_id TEXT NOT NULL REFERENCES maintenance_blocks(block_id),
+    priority_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'resolved', 'dropped')),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_risks (
+    risk_id TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    block_id TEXT NOT NULL REFERENCES maintenance_blocks(block_id),
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('awaiting_decision', 'resolved_continue', 'resolved_terminated')),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS manual_overrides (
+    override_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    note TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reservations_equipment ON reservations(equipment_id, status);
+CREATE INDEX IF NOT EXISTS idx_reservation_attachments_attachment ON reservation_attachments(attachment_id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_blocks_resource ON maintenance_blocks(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_open_windows_resource ON open_windows(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_calibration_resource ON calibration_certificates(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_reschedule_queue_site ON reschedule_queue(site_id, status);
 """
 
 
